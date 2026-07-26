@@ -1,115 +1,112 @@
 # gmaps-proto-scraper
 
-A minimal Go client for Google Maps' private `www.google.com/search?tbm=map` endpoint.
+Build local-business lead lists from Google Maps by choosing what type of business you want and where to search.
 
-It generates the required protobuf-shaped `pb` parameter from:
+Each lead can include:
 
-- Map centre latitude and longitude
-- Zoom level
-- Viewport dimensions
-- Result count and pagination offset
+- Business name
+- Address and phone number
+- Categories
+- Rating and review count
+- Latitude and longitude
+- Google Place ID and CID
 
-It does not use a HAR, cookies, session identifiers, browser headers, or a copied Maps configuration blob.
+Results are returned as JSON, deduplicated, and limited to the area you select.
 
-Requests use a configurable proxy by default. Provide any standard HTTP, HTTPS, or SOCKS5 proxy URL:
+## Setup
+
+Install [Go](https://go.dev/) and provide a rotating HTTP, HTTPS, or SOCKS5 proxy:
 
 ```sh
 export GMAPS_PROXY_URL="http://username:password@proxy.example.com:1000"
 ```
 
-HTTP keep-alives are disabled so every Google request creates a new proxy connection. Providers that rotate IPs per connection will therefore rotate each request. Country targeting, session parameters, and provider-specific options belong in the proxy URL supplied by the user.
+## Get leads near a location
 
-## Single search
-
-```sh
-go run . -query dentists -lat 51.5074 -lng -0.1278
-```
-
-Search a different location:
-
-```sh
-go run . -query "coffee shops" -lat 51.5155 -lng -0.0922 -zoom 14
-```
-
-Request the next 20 results:
-
-```sh
-go run . -query dentists -lat 51.5074 -lng -0.1278 -offset 20
-```
-
-Print the request URL:
-
-```sh
-go run . -query restaurants -lat 51.5074 -lng -0.1278 -print-url
-```
-
-## Bounding-box scan
-
-Pass bounding coordinates as `west,south,east,north`:
+Search around central London and save the results:
 
 ```sh
 go run . \
   -query dentists \
-  -bbox=-0.5103,51.2868,0.3340,51.6919 \
-  -zoom 14
+  -lat 51.5074 \
+  -lng -0.1278 \
+  > london-dentists.json
 ```
 
-The bbox is divided into overlapping Web Mercator viewports. Each viewport is paginated independently. Results are filtered back to the exact bbox and deduplicated by Place ID, CID, or entity ID.
+Replace `dentists` with any search you would use on Google Maps, such as `accountants`, `estate agents`, or `coffee shops`.
 
-Repeat `-query` to combine business categories:
+## Get leads across Greater London
+
+For broader coverage, give the scraper a bounding box. It divides the area into smaller searches, follows result pages, removes duplicates, and excludes businesses outside the box.
 
 ```sh
 go run . \
-  -query restaurants \
-  -query cafes \
-  -query pubs \
   -query dentists \
-  -query barbers \
-  -query hairdressers \
-  -query gyms \
-  -query shops \
   -bbox=-0.5103,51.2868,0.3340,51.6919 \
   -zoom 14 \
-  -width 1200 \
-  -height 800 \
-  -overlap 0.25 \
+  -max-pages 2 \
+  -concurrency 16 \
+  -verbose \
+  > london-dentists.json
+```
+
+In one live Greater London benchmark, this search returned 1,976 unique dentist listings in 28 seconds. Speed and result counts vary with the query, proxy, and Google Maps.
+
+## Combine several lead types
+
+Repeat `-query` to build one combined list:
+
+```sh
+go run . \
+  -query dentists \
+  -query orthodontists \
+  -query "dental implants" \
+  -bbox=-0.5103,51.2868,0.3340,51.6919 \
+  -zoom 14 \
   -max-pages 3 \
-  -concurrency 8 \
-  -request-delay 100ms \
-  -verbose
+  -concurrency 12 \
+  > london-dental-leads.json
 ```
 
-Useful bbox controls:
+## Export leads to CSV
 
-- `-zoom`: grid granularity. Higher values produce smaller geographic viewports.
-- `-width` and `-height`: viewport dimensions used to calculate the grid.
-- `-overlap`: minimum overlap between adjacent viewports.
-- `-max-pages`: pagination limit for each query and viewport.
-- `-max-tiles`: safety limit for generated viewports.
-- `-concurrency`: simultaneous query and viewport jobs.
-- `-request-delay`: global spacing between Google requests.
-- `-retries`: retry count for HTTP 429 and server errors.
-- `-proxy-url`: proxy URL, defaulting to `GMAPS_PROXY_URL`.
-- `-direct`: bypass the configured proxy.
-- `-verbose`: writes request statistics to stderr without corrupting JSON output.
+The scraper returns JSON by default. With `jq` installed, convert the output into a spreadsheet-ready CSV:
 
-The scanner stops paginating a viewport when Google returns fewer than 20 results or repeats the same result set.
-
-## Essential request
-
-The generated `pb` consists of:
-
-```text
-!4m8
-  !1m3!1d<altitude>!2d<longitude>!3d<latitude>
-  !3m2!1i<width>!2i<height>
-  !4f13.1
-!7i20
-!8i<offset>
-!10b1
-!34m1!31b1
+```sh
+go run . \
+  -query dentists \
+  -bbox=-0.5103,51.2868,0.3340,51.6919 \
+  -zoom 14 \
+  -max-pages 2 \
+  -concurrency 16 \
+  | jq -r '
+      (["name","address","phone","categories","rating","reviews","latitude","longitude","place_id"] | @csv),
+      (.[] | [
+        .name,
+        .address,
+        .phone,
+        (.categories // [] | join("; ")),
+        .rating,
+        .review_count,
+        .latitude,
+        .longitude,
+        .place_id
+      ] | @csv)
+    ' > london-dentists.csv
 ```
 
-The offset field is omitted for the first page. Map altitude is calculated from zoom, latitude, and viewport height.
+## Main options
 
-Google Maps returns ranked search results rather than an authoritative geographic database. Granular overlapping grids and repeated queries materially improve coverage, but cannot guarantee every business. Google Maps also uses a private endpoint and positional response schema, so these field identifiers and response indexes can change without notice.
+| Option | Purpose |
+| --- | --- |
+| `-query` | Business type or search phrase. Repeat it to combine searches. |
+| `-bbox` | Area to cover as `west,south,east,north`. |
+| `-lat` and `-lng` | Centre point for one local search. |
+| `-zoom` | Search-area granularity. Higher values create smaller searches and can improve coverage. |
+| `-max-pages` | Number of result pages checked for each area. |
+| `-concurrency` | Number of searches performed at the same time. |
+| `-request-delay` | Minimum pause between requests, such as `100ms` or `1s`. |
+| `-proxy-url` | Use a proxy without setting `GMAPS_PROXY_URL`. |
+| `-verbose` | Show progress while keeping the saved JSON clean. |
+
+Google Maps ranks results rather than providing a complete business directory. Smaller search areas, overlapping coverage, and related query variations improve the number of leads found, but no search can guarantee every business.
