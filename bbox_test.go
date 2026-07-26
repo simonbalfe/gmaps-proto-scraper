@@ -121,3 +121,13 @@ func TestScanTileStopsWhenPaginationRepeats(t *testing.T) {
 		t.Fatalf("expected one deduplicated place, got %d", len(places))
 	}
 }
+
+func TestMergePlacePreservesWebsite(t *testing.T) {
+	merged := mergePlace(
+		place{Name: "Example Dental", PlaceID: "example"},
+		place{Name: "Example Dental", PlaceID: "example", Website: "https://example.com"},
+	)
+	if merged.Website != "https://example.com" {
+		t.Fatalf("unexpected website: %q", merged.Website)
+	}
+}

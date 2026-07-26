@@ -269,6 +269,9 @@ func mergePlace(current, candidate place) place {
 	if current.Phone == "" {
 		current.Phone = candidate.Phone
 	}
+	if current.Website == "" {
+		current.Website = candidate.Website
+	}
 	if current.PlaceID == "" {
 		current.PlaceID = candidate.PlaceID
 	}

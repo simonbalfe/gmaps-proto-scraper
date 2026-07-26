@@ -5,7 +5,7 @@ Build local-business lead lists from Google Maps by choosing what type of busine
 Each lead can include:
 
 - Business name
-- Address and phone number
+- Address, phone number, and website
 - Categories
 - Rating and review count
 - Latitude and longitude
@@ -80,11 +80,12 @@ go run . \
   -max-pages 2 \
   -concurrency 16 \
   | jq -r '
-      (["name","address","phone","categories","rating","reviews","latitude","longitude","place_id"] | @csv),
+      (["name","address","phone","website","categories","rating","reviews","latitude","longitude","place_id"] | @csv),
       (.[] | [
         .name,
         .address,
         .phone,
+        .website,
         (.categories // [] | join("; ")),
         .rating,
         .review_count,

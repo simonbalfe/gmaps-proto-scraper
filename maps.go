@@ -42,6 +42,7 @@ type place struct {
 	Rating      float64  `json:"rating,omitempty"`
 	ReviewCount int      `json:"review_count,omitempty"`
 	Phone       string   `json:"phone,omitempty"`
+	Website     string   `json:"website,omitempty"`
 	PlaceID     string   `json:"place_id,omitempty"`
 	CID         string   `json:"cid,omitempty"`
 	EntityID    string   `json:"entity_id,omitempty"`
@@ -221,6 +222,7 @@ func decodePlaces(body []byte) ([]place, error) {
 			Name:       stringAt(record, 11),
 			Address:    stringAt(record, 18),
 			Categories: stringsAt(record, 13),
+			Website:    normaliseWebsite(stringAt(arrayAt(record, 7), 0)),
 			CID:        stringAt(record, 10),
 			PlaceID:    stringAt(record, 78),
 			EntityID:   stringAt(record, 89),
@@ -245,6 +247,34 @@ func decodePlaces(body []byte) ([]place, error) {
 		}
 	}
 	return places, nil
+}
+
+func normaliseWebsite(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return ""
+	}
+	parsed, err := url.Parse(value)
+	if err != nil {
+		return ""
+	}
+	host := strings.ToLower(parsed.Hostname())
+	isGoogleRedirect := parsed.Path == "/url" &&
+		(host == "" || host == "google.com" || strings.HasSuffix(host, ".google.com") ||
+			strings.HasPrefix(host, "www.google."))
+	if destination := parsed.Query().Get("q"); isGoogleRedirect && destination != "" {
+		parsed, err = url.Parse(destination)
+		if err != nil {
+			return ""
+		}
+	}
+	if parsed.Scheme != "http" && parsed.Scheme != "https" {
+		return ""
+	}
+	if parsed.Hostname() == "" {
+		return ""
+	}
+	return parsed.String()
 }
 
 func arrayAt(values []any, index int) []any {

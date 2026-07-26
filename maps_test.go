@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"net/http"
 	"testing"
 	"time"
@@ -65,5 +66,43 @@ func TestNewGoogleClientDisablesProxyKeepAlives(t *testing.T) {
 	}
 	if transport.Proxy == nil {
 		t.Fatal("expected proxy configuration")
+	}
+}
+
+func TestNormaliseWebsite(t *testing.T) {
+	tests := map[string]string{
+		"https://example.com/contact?utm_source=google":                         "https://example.com/contact?utm_source=google",
+		"https://example.com/search?q=dentists":                                 "https://example.com/search?q=dentists",
+		"/url?q=https%3A%2F%2Fexample.com%2Fcontact%3Futm_source%3Dgoogle&sa=U": "https://example.com/contact?utm_source=google",
+		"mailto:hello@example.com":                                              "",
+		"":                                                                      "",
+	}
+	for input, expected := range tests {
+		if actual := normaliseWebsite(input); actual != expected {
+			t.Fatalf("normaliseWebsite(%q) = %q, expected %q", input, actual, expected)
+		}
+	}
+}
+
+func TestDecodePlacesExtractsWebsite(t *testing.T) {
+	record := make([]any, 179)
+	record[7] = []any{"/url?q=https%3A%2F%2Fexample.com%2Fcontact&sa=U"}
+	record[11] = "Example Dental"
+	payload := make([]any, 65)
+	payload[64] = []any{[]any{nil, record}}
+	body, err := json.Marshal(payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	places, err := decodePlaces(body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(places) != 1 {
+		t.Fatalf("expected one place, got %d", len(places))
+	}
+	if places[0].Website != "https://example.com/contact" {
+		t.Fatalf("unexpected website: %q", places[0].Website)
 	}
 }
