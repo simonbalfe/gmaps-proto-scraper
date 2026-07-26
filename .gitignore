@@ -1,0 +1,4 @@
+/gmaps-proto-scraper
+.env
+.env.*
+!.env.example
