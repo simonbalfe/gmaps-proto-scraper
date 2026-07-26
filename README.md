@@ -68,6 +68,24 @@ go run . \
   > london-dental-leads.json
 ```
 
+## Get reviews for one lead
+
+Reviews are fetched separately so the main lead search stays fast. Pass either the lead's `place_id`, its `cid`, or a Google Maps URL:
+
+```sh
+PLACE_ID=$(jq -r '.[0].place_id' london-dentists.json)
+
+go run . \
+  -reviews-id "$PLACE_ID" \
+  -review-limit 100 \
+  -review-sort newest \
+  > london-dentist-reviews.json
+```
+
+Use `relevant`, `newest`, `highest`, or `lowest` for `-review-sort`. Each review can include the rating, text, publication time, reviewer, photos, review URL, and business response.
+
+Add `-verbose` to see how many review pages were fetched and whether pagination completed.
+
 ## Export leads to CSV
 
 The scraper returns JSON by default. With `jq` installed, convert the output into a spreadsheet-ready CSV:
@@ -109,5 +127,10 @@ go run . \
 | `-request-delay` | Minimum pause between requests, such as `100ms` or `1s`. |
 | `-proxy-url` | Use a proxy without setting `GMAPS_PROXY_URL`. |
 | `-verbose` | Show progress while keeping the saved JSON clean. |
+| `-reviews-id` | Fetch reviews for one Place ID, cid, or Google Maps URL instead of searching for leads. |
+| `-review-limit` | Maximum number of reviews to return. |
+| `-review-sort` | Order reviews by relevance, date, highest rating, or lowest rating. |
 
 Google Maps ranks results rather than providing a complete business directory. Smaller search areas, overlapping coverage, and related query variations improve the number of leads found, but no search can guarantee every business.
+
+The review retrieval approach was adapted from the MIT-licensed [google-maps-review-scraper](https://github.com/YasogaN/google-maps-review-scraper).

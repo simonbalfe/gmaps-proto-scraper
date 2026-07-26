@@ -29,6 +29,9 @@ func (values *stringList) Set(value string) error {
 
 type appOptions struct {
 	Queries      []string
+	ReviewsID    string
+	ReviewLimit  int
+	ReviewSort   string
 	Latitude     float64
 	Longitude    float64
 	Bounds       *bounds
@@ -55,6 +58,9 @@ type appOptions struct {
 func main() {
 	var queries stringList
 	flag.Var(&queries, "query", "search phrase; repeat for multiple queries")
+	reviewsID := flag.String("reviews-id", "", "Place ID, cid, or Google Maps URL to fetch reviews for")
+	reviewLimit := flag.Int("review-limit", 100, "maximum reviews to return")
+	reviewSort := flag.String("review-sort", "relevant", "review order: relevant, newest, highest, or lowest")
 	latitude := flag.Float64("lat", math.NaN(), "map centre latitude")
 	longitude := flag.Float64("lng", math.NaN(), "map centre longitude")
 	bboxValue := flag.String("bbox", "", "west,south,east,north")
@@ -89,6 +95,9 @@ func main() {
 
 	opts := appOptions{
 		Queries:      queries,
+		ReviewsID:    *reviewsID,
+		ReviewLimit:  *reviewLimit,
+		ReviewSort:   *reviewSort,
 		Latitude:     *latitude,
 		Longitude:    *longitude,
 		Bounds:       scanBounds,
@@ -124,6 +133,19 @@ func run(opts appOptions) error {
 	client, err := newGoogleClient(opts)
 	if err != nil {
 		return err
+	}
+	if opts.ReviewsID != "" {
+		reviews, stats, err := client.reviews(opts.ReviewsID, opts.ReviewSort, opts.ReviewLimit)
+		if err != nil {
+			return err
+		}
+		if opts.Verbose {
+			fmt.Fprintf(os.Stderr, "reviews=%d pages=%d complete=%t\n", len(reviews), stats.Pages, stats.Complete)
+			for _, warning := range stats.Warnings {
+				fmt.Fprintf(os.Stderr, "review note: %s\n", warning)
+			}
+		}
+		return writeJSON(reviews)
 	}
 	if opts.Bounds != nil {
 		places, stats, err := scanBBox(client, opts)
@@ -173,9 +195,6 @@ func run(opts appOptions) error {
 }
 
 func validateAppOptions(opts appOptions) error {
-	if len(opts.Queries) == 0 {
-		return errors.New("at least one -query is required")
-	}
 	if opts.Zoom < 0 || opts.Zoom > 22 {
 		return errors.New("-zoom must be between 0 and 22")
 	}
@@ -187,6 +206,25 @@ func validateAppOptions(opts appOptions) error {
 	}
 	if opts.Timeout <= 0 {
 		return errors.New("-timeout must be positive")
+	}
+	if !opts.Direct && strings.TrimSpace(opts.ProxyURL) == "" {
+		return errors.New("-proxy-url or GMAPS_PROXY_URL is required unless -direct is used")
+	}
+	if opts.ReviewsID != "" {
+		if len(opts.Queries) != 0 || opts.Bounds != nil {
+			return errors.New("-reviews-id cannot be combined with -query or -bbox")
+		}
+		if opts.Raw || opts.PrintURL {
+			return errors.New("-raw and -print-url are not available with -reviews-id")
+		}
+		if opts.ReviewLimit < 1 {
+			return errors.New("-review-limit must be positive")
+		}
+		_, err := parseReviewSort(opts.ReviewSort)
+		return err
+	}
+	if len(opts.Queries) == 0 {
+		return errors.New("at least one -query or -reviews-id is required")
 	}
 	if opts.Bounds == nil {
 		if math.IsNaN(opts.Latitude) || opts.Latitude < -90 || opts.Latitude > 90 {
@@ -224,9 +262,6 @@ func validateAppOptions(opts appOptions) error {
 	if opts.Retries < 0 {
 		return errors.New("-retries cannot be negative")
 	}
-	if !opts.Direct && strings.TrimSpace(opts.ProxyURL) == "" {
-		return errors.New("-proxy-url or GMAPS_PROXY_URL is required unless -direct is used")
-	}
 	return nil
 }
 
@@ -251,9 +286,13 @@ func writePlaces(places []place) error {
 		}
 		return places[i].Name < places[j].Name
 	})
+	return writeJSON(places)
+}
+
+func writeJSON(value any) error {
 	encoder := json.NewEncoder(os.Stdout)
 	encoder.SetIndent("", "  ")
-	return encoder.Encode(places)
+	return encoder.Encode(value)
 }
 
 func exit(err error) {

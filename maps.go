@@ -123,10 +123,18 @@ func (client *googleClient) search(request searchRequest) ([]place, error) {
 }
 
 func (client *googleClient) fetch(request searchRequest) ([]byte, error) {
-	requestURL := buildURL(request)
+	return client.get(buildURL(request), nil)
+}
+
+func (client *googleClient) get(requestURL string, headers http.Header) ([]byte, error) {
 	for attempt := 0; attempt <= client.maxRetries; attempt++ {
 		client.limiter.wait()
-		resp, err := client.http.Get(requestURL)
+		request, err := http.NewRequest(http.MethodGet, requestURL, nil)
+		if err != nil {
+			return nil, fmt.Errorf("create Google request: %w", err)
+		}
+		request.Header = headers.Clone()
+		resp, err := client.http.Do(request)
 		if err != nil {
 			if attempt == client.maxRetries {
 				return nil, fmt.Errorf("request Google Maps: %w", err)
@@ -149,6 +157,14 @@ func (client *googleClient) fetch(request searchRequest) ([]byte, error) {
 		time.Sleep(retryDelay(attempt, resp.Header.Get("Retry-After")))
 	}
 	return nil, errors.New("Google request retries exhausted")
+}
+
+func browserHeaders() http.Header {
+	headers := make(http.Header)
+	headers.Set("Accept", "*/*")
+	headers.Set("Accept-Language", "en-GB,en;q=0.9")
+	headers.Set("User-Agent", "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Safari/537.36")
+	return headers
 }
 
 func retryableStatus(status int) bool {
