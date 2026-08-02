@@ -6,12 +6,15 @@ import (
 	"fmt"
 	"io"
 	"math"
-	"net/http"
 	"net/url"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
+
+	http "github.com/bogdanfinn/fhttp"
+	tlsclient "github.com/bogdanfinn/tls-client"
+	"github.com/bogdanfinn/tls-client/profiles"
 )
 
 const (
@@ -19,6 +22,7 @@ const (
 	tileSize          = 256.0
 	fieldOfViewFactor = 27.3611
 	resultCount       = 20
+	chromeUserAgent   = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/144.0.0.0 Safari/537.36"
 )
 
 type searchRequest struct {
@@ -43,6 +47,7 @@ type place struct {
 	ReviewCount int      `json:"review_count,omitempty"`
 	Phone       string   `json:"phone,omitempty"`
 	Website     string   `json:"website,omitempty"`
+	Emails      []string `json:"emails,omitempty"`
 	PlaceID     string   `json:"place_id,omitempty"`
 	CID         string   `json:"cid,omitempty"`
 	EntityID    string   `json:"entity_id,omitempty"`
@@ -53,7 +58,7 @@ type placeSearcher interface {
 }
 
 type googleClient struct {
-	http       *http.Client
+	http       tlsclient.HttpClient
 	limiter    *requestLimiter
 	maxRetries int
 }
@@ -65,19 +70,26 @@ type requestLimiter struct {
 }
 
 func newGoogleClient(opts appOptions) (*googleClient, error) {
-	transport := http.DefaultTransport.(*http.Transport).Clone()
+	clientOptions := []tlsclient.HttpClientOption{
+		tlsclient.WithClientProfile(profiles.Chrome_144),
+		tlsclient.WithTimeoutMilliseconds(int(opts.Timeout.Milliseconds())),
+	}
 	if !opts.Direct {
 		proxyURL, err := parseProxyURL(opts.ProxyURL)
 		if err != nil {
 			return nil, err
 		}
-		transport.Proxy = http.ProxyURL(proxyURL)
-		transport.DisableKeepAlives = true
-		transport.MaxIdleConns = 0
-		transport.MaxIdleConnsPerHost = -1
+		clientOptions = append(clientOptions,
+			tlsclient.WithProxyUrl(proxyURL.String()),
+			tlsclient.WithTransportOptions(&tlsclient.TransportOptions{DisableKeepAlives: true}),
+		)
+	}
+	httpClient, err := tlsclient.NewHttpClient(tlsclient.NewNoopLogger(), clientOptions...)
+	if err != nil {
+		return nil, fmt.Errorf("create TLS client: %w", err)
 	}
 	return &googleClient{
-		http:       &http.Client{Transport: transport, Timeout: opts.Timeout},
+		http:       httpClient,
 		limiter:    &requestLimiter{interval: opts.RequestDelay},
 		maxRetries: opts.Retries,
 	}, nil
@@ -123,7 +135,7 @@ func (client *googleClient) search(request searchRequest) ([]place, error) {
 }
 
 func (client *googleClient) fetch(request searchRequest) ([]byte, error) {
-	return client.get(buildURL(request), nil)
+	return client.get(buildURL(request), browserHeaders())
 }
 
 func (client *googleClient) get(requestURL string, headers http.Header) ([]byte, error) {
@@ -137,7 +149,7 @@ func (client *googleClient) get(requestURL string, headers http.Header) ([]byte,
 		resp, err := client.http.Do(request)
 		if err != nil {
 			if attempt == client.maxRetries {
-				return nil, fmt.Errorf("request Google Maps: %w", err)
+				return nil, fmt.Errorf("request URL: %w", err)
 			}
 			time.Sleep(retryDelay(attempt, ""))
 			continue
@@ -152,7 +164,7 @@ func (client *googleClient) get(requestURL string, headers http.Header) ([]byte,
 			return body, nil
 		}
 		if !retryableStatus(resp.StatusCode) || attempt == client.maxRetries {
-			return nil, fmt.Errorf("Google returned %s: %s", resp.Status, preview(body, 500))
+			return nil, fmt.Errorf("remote returned %s: %s", resp.Status, preview(body, 500))
 		}
 		time.Sleep(retryDelay(attempt, resp.Header.Get("Retry-After")))
 	}
@@ -160,11 +172,16 @@ func (client *googleClient) get(requestURL string, headers http.Header) ([]byte,
 }
 
 func browserHeaders() http.Header {
-	headers := make(http.Header)
-	headers.Set("Accept", "*/*")
-	headers.Set("Accept-Language", "en-GB,en;q=0.9")
-	headers.Set("User-Agent", "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Safari/537.36")
-	return headers
+	return http.Header{
+		"Accept":          {"*/*"},
+		"Accept-Language": {"en-GB,en;q=0.9"},
+		"User-Agent":      {chromeUserAgent},
+		http.HeaderOrderKey: {
+			"accept",
+			"accept-language",
+			"user-agent",
+		},
+	}
 }
 
 func retryableStatus(status int) bool {

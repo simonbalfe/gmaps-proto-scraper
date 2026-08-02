@@ -30,6 +30,35 @@ func TestParseBounds(t *testing.T) {
 	}
 }
 
+func TestParseGeoJSONArea(t *testing.T) {
+	polygons, value, err := parseGeoJSONArea([]byte(`{
+		"type":"FeatureCollection",
+		"features":[
+			{"type":"Feature","geometry":{"type":"Polygon","coordinates":[[[0,0],[10,0],[10,10],[0,10],[0,0]],[[4,4],[6,4],[6,6],[4,6],[4,4]]]}},
+			{"type":"Feature","geometry":{"type":"MultiPolygon","coordinates":[[[[20,20],[21,20],[21,21],[20,21],[20,20]]]]}}
+		]
+	}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if value != (bounds{West: 0, South: 0, East: 21, North: 21}) {
+		t.Fatalf("unexpected bounds: %+v", value)
+	}
+	for _, test := range []struct {
+		place place
+		want  bool
+	}{
+		{place: place{Latitude: 2, Longitude: 2}, want: true},
+		{place: place{Latitude: 5, Longitude: 5}, want: false},
+		{place: place{Latitude: 20.5, Longitude: 20.5}, want: true},
+		{place: place{Latitude: 15, Longitude: 15}, want: false},
+	} {
+		if got := polygonsContain(polygons, test.place); got != test.want {
+			t.Errorf("polygonsContain(%+v) = %t, want %t", test.place, got, test.want)
+		}
+	}
+}
+
 func TestTileCentresCoversLondonWithMultipleTiles(t *testing.T) {
 	value := bounds{West: -0.5103, South: 51.2868, East: 0.3340, North: 51.6919}
 	centres := tileCentres(value, 14, 1200, 800, 0.2)
@@ -49,6 +78,7 @@ func TestScanBBoxCombinesQueriesFiltersAndDeduplicates(t *testing.T) {
 		responses: map[string][]place{
 			"barbers": {
 				{Name: "Alpha", PlaceID: "alpha", Latitude: 51.50, Longitude: -0.10},
+				{Name: "Inside bbox only", PlaceID: "bbox-only", Latitude: 51.65, Longitude: 0.20},
 				{Name: "Outside", PlaceID: "outside", Latitude: 52.1, Longitude: -0.27},
 			},
 			"hairdressers": {
@@ -59,8 +89,15 @@ func TestScanBBoxCombinesQueriesFiltersAndDeduplicates(t *testing.T) {
 	}
 	value := bounds{West: -0.5103, South: 51.2868, East: 0.3340, North: 51.6919}
 	opts := appOptions{
-		Queries:     []string{"barbers", "hairdressers"},
-		Bounds:      &value,
+		Queries: []string{"barbers", "hairdressers"},
+		Bounds:  &value,
+		Polygons: []polygon{{{
+			{Latitude: 51.4, Longitude: -0.2},
+			{Latitude: 51.4, Longitude: 0},
+			{Latitude: 51.6, Longitude: 0},
+			{Latitude: 51.6, Longitude: -0.2},
+			{Latitude: 51.4, Longitude: -0.2},
+		}}},
 		Zoom:        12,
 		Width:       5000,
 		Height:      5000,

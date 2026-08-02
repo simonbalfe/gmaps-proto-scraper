@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"net/http"
+	"strings"
 	"testing"
 	"time"
 )
@@ -47,25 +48,25 @@ func TestParseProxyURL(t *testing.T) {
 	}
 }
 
-func TestNewGoogleClientDisablesProxyKeepAlives(t *testing.T) {
+func TestNewGoogleClientConfiguresTLSClientProxy(t *testing.T) {
+	const proxyURL = "http://user:password@proxy.example.com:1000"
 	client, err := newGoogleClient(appOptions{
 		Timeout:      time.Second,
 		RequestDelay: time.Millisecond,
 		Retries:      2,
-		ProxyURL:     "http://user:password@proxy.example.com:1000",
+		ProxyURL:     proxyURL,
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	transport, ok := client.http.Transport.(*http.Transport)
-	if !ok {
-		t.Fatal("expected HTTP transport")
+	if actual := client.http.GetProxy(); actual != proxyURL {
+		t.Fatalf("proxy = %q, expected %q", actual, proxyURL)
 	}
-	if !transport.DisableKeepAlives {
-		t.Fatal("proxy keep-alives must be disabled for per-request rotation")
-	}
-	if transport.Proxy == nil {
-		t.Fatal("expected proxy configuration")
+}
+
+func TestBrowserHeadersMatchTLSProfile(t *testing.T) {
+	if actual := browserHeaders().Get("User-Agent"); !strings.Contains(actual, "Chrome/144.") {
+		t.Fatalf("unexpected browser User-Agent: %q", actual)
 	}
 }
 

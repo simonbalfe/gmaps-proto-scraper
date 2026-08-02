@@ -28,31 +28,34 @@ func (values *stringList) Set(value string) error {
 }
 
 type appOptions struct {
-	Queries      []string
-	ReviewsID    string
-	ReviewLimit  int
-	ReviewSort   string
-	Latitude     float64
-	Longitude    float64
-	Bounds       *bounds
-	Zoom         float64
-	Width        int
-	Height       int
-	Offset       int
-	Language     string
-	Country      string
-	Overlap      float64
-	MaxPages     int
-	MaxTiles     int
-	Concurrency  int
-	RequestDelay time.Duration
-	Retries      int
-	Direct       bool
-	ProxyURL     string
-	Raw          bool
-	PrintURL     bool
-	Verbose      bool
-	Timeout      time.Duration
+	Queries          []string
+	ReviewsID        string
+	ReviewLimit      int
+	ReviewSort       string
+	EmailPages       int
+	EmailConcurrency int
+	Latitude         float64
+	Longitude        float64
+	Bounds           *bounds
+	Polygons         []polygon
+	Zoom             float64
+	Width            int
+	Height           int
+	Offset           int
+	Language         string
+	Country          string
+	Overlap          float64
+	MaxPages         int
+	MaxTiles         int
+	Concurrency      int
+	RequestDelay     time.Duration
+	Retries          int
+	Direct           bool
+	ProxyURL         string
+	Raw              bool
+	PrintURL         bool
+	Verbose          bool
+	Timeout          time.Duration
 }
 
 func main() {
@@ -61,9 +64,12 @@ func main() {
 	reviewsID := flag.String("reviews-id", "", "Place ID, cid, or Google Maps URL to fetch reviews for")
 	reviewLimit := flag.Int("review-limit", 100, "maximum reviews to return")
 	reviewSort := flag.String("review-sort", "relevant", "review order: relevant, newest, highest, or lowest")
+	emailPages := flag.Int("email-pages", 0, "scan homepage plus this many sitemap pages for emails; 0 disables email fetching")
+	emailConcurrency := flag.Int("email-concurrency", 4, "concurrent website email fetches")
 	latitude := flag.Float64("lat", math.NaN(), "map centre latitude")
 	longitude := flag.Float64("lng", math.NaN(), "map centre longitude")
 	bboxValue := flag.String("bbox", "", "west,south,east,north")
+	bboxFile := flag.String("bbox-file", "", "GeoJSON Polygon or MultiPolygon search area")
 	zoom := flag.Float64("zoom", 14, "Google Maps zoom level")
 	width := flag.Int("width", 1200, "map viewport width")
 	height := flag.Int("height", 800, "map viewport height")
@@ -85,6 +91,10 @@ func main() {
 	flag.Parse()
 
 	var scanBounds *bounds
+	var polygons []polygon
+	if strings.TrimSpace(*bboxValue) != "" && strings.TrimSpace(*bboxFile) != "" {
+		exit(errors.New("-bbox and -bbox-file cannot be combined"))
+	}
 	if strings.TrimSpace(*bboxValue) != "" {
 		parsed, err := parseBounds(*bboxValue)
 		if err != nil {
@@ -92,33 +102,48 @@ func main() {
 		}
 		scanBounds = &parsed
 	}
+	if strings.TrimSpace(*bboxFile) != "" {
+		data, err := os.ReadFile(*bboxFile)
+		if err != nil {
+			exit(fmt.Errorf("read -bbox-file: %w", err))
+		}
+		parsedPolygons, parsedBounds, err := parseGeoJSONArea(data)
+		if err != nil {
+			exit(fmt.Errorf("parse -bbox-file: %w", err))
+		}
+		polygons = parsedPolygons
+		scanBounds = &parsedBounds
+	}
 
 	opts := appOptions{
-		Queries:      queries,
-		ReviewsID:    *reviewsID,
-		ReviewLimit:  *reviewLimit,
-		ReviewSort:   *reviewSort,
-		Latitude:     *latitude,
-		Longitude:    *longitude,
-		Bounds:       scanBounds,
-		Zoom:         *zoom,
-		Width:        *width,
-		Height:       *height,
-		Offset:       *offset,
-		Language:     *language,
-		Country:      *country,
-		Overlap:      *overlap,
-		MaxPages:     *maxPages,
-		MaxTiles:     *maxTiles,
-		Concurrency:  *concurrency,
-		RequestDelay: *requestDelay,
-		Retries:      *retries,
-		Direct:       *direct,
-		ProxyURL:     *proxyURL,
-		Raw:          *raw,
-		PrintURL:     *printURL,
-		Verbose:      *verbose,
-		Timeout:      *timeout,
+		Queries:          queries,
+		ReviewsID:        *reviewsID,
+		ReviewLimit:      *reviewLimit,
+		ReviewSort:       *reviewSort,
+		EmailPages:       *emailPages,
+		EmailConcurrency: *emailConcurrency,
+		Latitude:         *latitude,
+		Longitude:        *longitude,
+		Bounds:           scanBounds,
+		Polygons:         polygons,
+		Zoom:             *zoom,
+		Width:            *width,
+		Height:           *height,
+		Offset:           *offset,
+		Language:         *language,
+		Country:          *country,
+		Overlap:          *overlap,
+		MaxPages:         *maxPages,
+		MaxTiles:         *maxTiles,
+		Concurrency:      *concurrency,
+		RequestDelay:     *requestDelay,
+		Retries:          *retries,
+		Direct:           *direct,
+		ProxyURL:         *proxyURL,
+		Raw:              *raw,
+		PrintURL:         *printURL,
+		Verbose:          *verbose,
+		Timeout:          *timeout,
 	}
 	if err := run(opts); err != nil {
 		exit(err)
@@ -162,7 +187,7 @@ func run(opts appOptions) error {
 				len(places),
 			)
 		}
-		return writePlaces(places)
+		return finishPlaces(client, places, opts)
 	}
 
 	if opts.Raw || opts.PrintURL {
@@ -191,7 +216,20 @@ func run(opts appOptions) error {
 			unique[key] = mergePlace(unique[key], item)
 		}
 	}
-	return writePlaces(mapPlaces(unique))
+	return finishPlaces(client, mapPlaces(unique), opts)
+}
+
+func finishPlaces(client *googleClient, places []place, opts appOptions) error {
+	if opts.EmailPages > 0 {
+		scanned, warnings := client.enrichEmails(places, opts.EmailPages, opts.EmailConcurrency)
+		if opts.Verbose {
+			fmt.Fprintf(os.Stderr, "email_sites=%d places=%d\n", scanned, len(places))
+			for _, warning := range warnings {
+				fmt.Fprintf(os.Stderr, "email note: %s\n", warning)
+			}
+		}
+	}
+	return writePlaces(places)
 }
 
 func validateAppOptions(opts appOptions) error {
@@ -207,6 +245,12 @@ func validateAppOptions(opts appOptions) error {
 	if opts.Timeout <= 0 {
 		return errors.New("-timeout must be positive")
 	}
+	if opts.EmailPages < 0 {
+		return errors.New("-email-pages cannot be negative")
+	}
+	if opts.EmailConcurrency < 1 {
+		return errors.New("-email-concurrency must be positive")
+	}
 	if !opts.Direct && strings.TrimSpace(opts.ProxyURL) == "" {
 		return errors.New("-proxy-url or GMAPS_PROXY_URL is required unless -direct is used")
 	}
@@ -216,6 +260,9 @@ func validateAppOptions(opts appOptions) error {
 		}
 		if opts.Raw || opts.PrintURL {
 			return errors.New("-raw and -print-url are not available with -reviews-id")
+		}
+		if opts.EmailPages > 0 {
+			return errors.New("-email-pages is only available for lead searches")
 		}
 		if opts.ReviewLimit < 1 {
 			return errors.New("-review-limit must be positive")

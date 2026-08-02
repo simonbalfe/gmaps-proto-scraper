@@ -143,14 +143,15 @@ func TestFindReviewEntityID(t *testing.T) {
 
 func TestValidateReviewMode(t *testing.T) {
 	err := validateAppOptions(appOptions{
-		ReviewsID:   "ChIJExample",
-		ReviewLimit: 10,
-		ReviewSort:  "newest",
-		Zoom:        14,
-		Width:       1200,
-		Height:      800,
-		Direct:      true,
-		Timeout:     30,
+		ReviewsID:        "ChIJExample",
+		ReviewLimit:      10,
+		ReviewSort:       "newest",
+		EmailConcurrency: 4,
+		Zoom:             14,
+		Width:            1200,
+		Height:           800,
+		Direct:           true,
+		Timeout:          30,
 	})
 	if err != nil {
 		t.Fatal(err)

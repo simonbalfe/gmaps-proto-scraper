@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"math"
@@ -21,6 +22,15 @@ type bounds struct {
 type point struct {
 	Latitude  float64
 	Longitude float64
+}
+
+type polygon [][]point
+
+type geoJSON struct {
+	Type        string          `json:"type"`
+	Coordinates json.RawMessage `json:"coordinates"`
+	Geometry    *geoJSON        `json:"geometry"`
+	Features    []geoJSON       `json:"features"`
 }
 
 type scanStats struct {
@@ -72,6 +82,113 @@ func parseBounds(value string) (bounds, error) {
 			-mercatorLatitudeLimit,
 			mercatorLatitudeLimit,
 		)
+	}
+	return result, nil
+}
+
+func parseGeoJSONArea(data []byte) ([]polygon, bounds, error) {
+	var document geoJSON
+	if err := json.Unmarshal(data, &document); err != nil {
+		return nil, bounds{}, fmt.Errorf("decode GeoJSON: %w", err)
+	}
+	polygons, err := geoJSONPolygons(document)
+	if err != nil {
+		return nil, bounds{}, err
+	}
+	if len(polygons) == 0 {
+		return nil, bounds{}, errors.New("GeoJSON contains no polygons")
+	}
+
+	result := bounds{West: math.Inf(1), South: math.Inf(1), East: math.Inf(-1), North: math.Inf(-1)}
+	for _, value := range polygons {
+		for _, ring := range value {
+			for _, position := range ring {
+				result.West = min(result.West, position.Longitude)
+				result.South = min(result.South, position.Latitude)
+				result.East = max(result.East, position.Longitude)
+				result.North = max(result.North, position.Latitude)
+			}
+		}
+	}
+	if result.West >= result.East || result.South >= result.North {
+		return nil, bounds{}, errors.New("GeoJSON area must have non-zero width and height")
+	}
+	return polygons, result, nil
+}
+
+func geoJSONPolygons(value geoJSON) ([]polygon, error) {
+	switch value.Type {
+	case "FeatureCollection":
+		var result []polygon
+		for index, feature := range value.Features {
+			polygons, err := geoJSONPolygons(feature)
+			if err != nil {
+				return nil, fmt.Errorf("feature %d: %w", index, err)
+			}
+			result = append(result, polygons...)
+		}
+		return result, nil
+	case "Feature":
+		if value.Geometry == nil {
+			return nil, errors.New("feature has no geometry")
+		}
+		return geoJSONPolygons(*value.Geometry)
+	case "Polygon":
+		var coordinates [][][]float64
+		if err := json.Unmarshal(value.Coordinates, &coordinates); err != nil {
+			return nil, fmt.Errorf("decode Polygon coordinates: %w", err)
+		}
+		parsed, err := parsePolygon(coordinates)
+		if err != nil {
+			return nil, err
+		}
+		return []polygon{parsed}, nil
+	case "MultiPolygon":
+		var coordinates [][][][]float64
+		if err := json.Unmarshal(value.Coordinates, &coordinates); err != nil {
+			return nil, fmt.Errorf("decode MultiPolygon coordinates: %w", err)
+		}
+		result := make([]polygon, 0, len(coordinates))
+		for index, coordinate := range coordinates {
+			parsed, err := parsePolygon(coordinate)
+			if err != nil {
+				return nil, fmt.Errorf("polygon %d: %w", index, err)
+			}
+			result = append(result, parsed)
+		}
+		return result, nil
+	default:
+		return nil, fmt.Errorf("unsupported GeoJSON type %q; use Polygon or MultiPolygon", value.Type)
+	}
+}
+
+func parsePolygon(coordinates [][][]float64) (polygon, error) {
+	if len(coordinates) == 0 {
+		return nil, errors.New("polygon has no rings")
+	}
+	result := make(polygon, len(coordinates))
+	for ringIndex, coordinates := range coordinates {
+		if len(coordinates) < 4 {
+			return nil, fmt.Errorf("ring %d must have at least four positions", ringIndex)
+		}
+		ring := make([]point, len(coordinates))
+		for positionIndex, coordinates := range coordinates {
+			if len(coordinates) < 2 {
+				return nil, fmt.Errorf("ring %d position %d must contain longitude and latitude", ringIndex, positionIndex)
+			}
+			longitude, latitude := coordinates[0], coordinates[1]
+			if math.IsNaN(longitude) || math.IsInf(longitude, 0) || longitude < -180 || longitude > 180 {
+				return nil, fmt.Errorf("ring %d position %d has invalid longitude", ringIndex, positionIndex)
+			}
+			if math.IsNaN(latitude) || math.IsInf(latitude, 0) || latitude < -mercatorLatitudeLimit || latitude > mercatorLatitudeLimit {
+				return nil, fmt.Errorf("ring %d position %d has invalid latitude", ringIndex, positionIndex)
+			}
+			ring[positionIndex] = point{Latitude: latitude, Longitude: longitude}
+		}
+		if ring[0] != ring[len(ring)-1] {
+			return nil, fmt.Errorf("ring %d is not closed", ringIndex)
+		}
+		result[ringIndex] = ring
 	}
 	return result, nil
 }
@@ -131,7 +248,7 @@ func scanBBox(searcher placeSearcher, opts appOptions) ([]place, scanStats, erro
 			continue
 		}
 		for _, item := range result.Places {
-			if opts.Bounds.contains(item) {
+			if opts.Bounds.contains(item) && (len(opts.Polygons) == 0 || polygonsContain(opts.Polygons, item)) {
 				key := placeKey(item)
 				unique[key] = mergePlace(unique[key], item)
 			}
@@ -141,6 +258,53 @@ func scanBBox(searcher placeSearcher, opts appOptions) ([]place, scanStats, erro
 		return nil, stats, firstError
 	}
 	return mapPlaces(unique), stats, nil
+}
+
+func polygonsContain(polygons []polygon, item place) bool {
+	position := point{Latitude: item.Latitude, Longitude: item.Longitude}
+	for _, value := range polygons {
+		if len(value) == 0 || !ringContains(value[0], position) {
+			continue
+		}
+		inside := true
+		for _, hole := range value[1:] {
+			if ringContains(hole, position) {
+				inside = false
+				break
+			}
+		}
+		if inside {
+			return true
+		}
+	}
+	return false
+}
+
+func ringContains(ring []point, position point) bool {
+	inside := false
+	for index := 0; index < len(ring)-1; index++ {
+		first, second := ring[index], ring[index+1]
+		if pointOnSegment(position, first, second) {
+			return true
+		}
+		crosses := (first.Latitude > position.Latitude) != (second.Latitude > position.Latitude)
+		if crosses && position.Longitude < (second.Longitude-first.Longitude)*
+			(position.Latitude-first.Latitude)/(second.Latitude-first.Latitude)+first.Longitude {
+			inside = !inside
+		}
+	}
+	return inside
+}
+
+func pointOnSegment(position, first, second point) bool {
+	const tolerance = 1e-10
+	cross := (position.Latitude-first.Latitude)*(second.Longitude-first.Longitude) -
+		(position.Longitude-first.Longitude)*(second.Latitude-first.Latitude)
+	return math.Abs(cross) <= tolerance &&
+		position.Longitude >= min(first.Longitude, second.Longitude)-tolerance &&
+		position.Longitude <= max(first.Longitude, second.Longitude)+tolerance &&
+		position.Latitude >= min(first.Latitude, second.Latitude)-tolerance &&
+		position.Latitude <= max(first.Latitude, second.Latitude)+tolerance
 }
 
 func scanTile(searcher placeSearcher, opts appOptions, job scanJob) ([]place, int, error) {
